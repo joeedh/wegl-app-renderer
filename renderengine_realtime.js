@@ -1,5 +1,5 @@
 import {DataBlock, DataRef} from '../core/lib_api.js';
-import {loadShader, Shaders} from '../editors/view3d/view3d_shaders.js';
+import {loadShader, Shaders} from '../shaders/shaders.js';
 import {LightGen} from '../shadernodes/shader_lib.js';
 import {Light} from '../light/light.js';
 import {FBO} from '../core/fbo.js';
@@ -325,6 +325,8 @@ export class RealtimeEngine extends RenderEngine {
       passThru.outputs.fbo.connect(out.inputs.fbo);
     } else {
       base.outputs.fbo.connect(out.inputs.fbo);
+      //ao.outputs.fbo.disconnect();
+      //ao.outputs.fbo.connect(out.inputs.fbo);
     }
   }
 
@@ -333,7 +335,7 @@ export class RealtimeEngine extends RenderEngine {
   }
 
   resetRender() {
-    console.log("reset render frame");
+    //console.log("reset render frame");
     this.uSample = -1;
   }
 
@@ -365,7 +367,7 @@ export class RealtimeEngine extends RenderEngine {
     }
   }
 
-  render(camera, gl, viewbox_pos, viewbox_size, scene) {
+  render(camera, gl, viewbox_pos, viewbox_size, scene, extraDrawCB) {
     this.scene = scene;
     this.gl = gl;
     this.camera = camera;
@@ -375,6 +377,7 @@ export class RealtimeEngine extends RenderEngine {
     this.initLights();
     this.renderShadowMaps();
 
+    this.extraDrawCB = extraDrawCB;
     this.rendergraph.exec(gl, this, viewbox_size, camera, scene);
 
     let graph = this.rendergraph.graph;
@@ -387,7 +390,6 @@ export class RealtimeEngine extends RenderEngine {
       }
     }
 
-
     if (!output) {
       return;
     }
@@ -395,9 +397,9 @@ export class RealtimeEngine extends RenderEngine {
     if (output.outputs.fbo.getValue().texColor) {
       let rctx = this.rendergraph.rctx;
 
-      gl.enable(gl.DEPTH_TEST);
-      gl.disable(gl.BLEND);
-      gl.depthMask(false);
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.depthMask(true);
 
       rctx.drawFinalQuad(output.outputs.fbo.getValue());
     }
@@ -576,7 +578,6 @@ export class RealtimeEngine extends RenderEngine {
   }
 
   render_intern(camera, gl, viewbox_pos, viewbox_size, scene) {
-    //XXX
     let view3d = _appstate.ctx.view3d;
 
     this.cache.drawStart(gl);
@@ -589,8 +590,6 @@ export class RealtimeEngine extends RenderEngine {
       ambientPower     : scene.envlight.power,
       uSample          : this.uSample
     };
-
-    console.log("ambient color", scene.envlight.color);
 
     let ao = this.aoPass.getOutput();
     if (ao.texColor) {
@@ -640,7 +639,6 @@ export class RealtimeEngine extends RenderEngine {
       }
 
       if (program === undefined) {
-        console.warn("no material");
         program = Shaders.BasicLitMesh;
       }
 
