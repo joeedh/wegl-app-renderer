@@ -42,6 +42,7 @@ export const CubeMapOrder = {
 export class CubeFace {
   constructor(gl, mat, cmat, size, face, cubeColor, cubeDepth, near, far) {
     this.fbo = new FBO();
+    this._queueResetSamples = false;
     this.fbo.target = gl.TEXTURE_CUBE_MAP;
     this.cubeColor = cubeColor;
     this.cubeDepth = cubeDepth;
@@ -92,6 +93,7 @@ export class CubeFace {
 
     let program = Shaders.MeshLinearZShader;
 
+
     this.iprojectionMatrix.load(this.projectionMatrix);
     this.iprojectionMatrix.invert();
 
@@ -107,7 +109,7 @@ export class CubeFace {
     };
 
     for (let ob of scene.objects.renderable) {
-      if (!(ob.data instanceof Mesh)) {
+      if (!(ob.data.usesMaterial)) {
         continue;
       }
 
@@ -161,6 +163,8 @@ export class CubeMap extends Array {
     this.gltex = new CubeTexture(undefined, tex);
   }
 }
+
+export const LightIdSymbol = Symbol("light_id");
 
 export class ShaderCacheItem {
   constructor(shader, gen) {
@@ -226,8 +230,10 @@ export class ShaderCache {
 }
 
 export class RenderLight {
-  constructor(light) {
+  constructor(light, id) {
     this.light = light;
+    this._digest = new util.HashDigest();
+    this.id = id;
     this.shadowmap = undefined;
     this.co = new Vector3();
     this.seed = 0;
@@ -235,6 +241,31 @@ export class RenderLight {
     if (light !== undefined) {
       this.calcCo();
     }
+  }
+
+  calcUpdateHash() {
+    let hash = this._digest;
+    hash.reset();
+
+    if (!this.light) {
+      return 0;
+    }
+
+    let light = this.light;
+
+    let mat = light.outputs.matrix.getValue();
+    mat.addToHashDigest(hash);
+
+    for (let k in light.data.inputs) {
+      let sock = light.data.inputs[k];
+      if (sock.edges.length > 0) {
+        sock = sock.edges[0];
+      }
+
+      sock.addToUpdateHash(hash);
+    }
+
+    return hash.get();
   }
 
   calcCo() {
@@ -266,16 +297,23 @@ export class RealtimeEngine extends RenderEngine {
   constructor(view3d) {
     super();
 
+    this._digest = new util.HashDigest();
+
     this.projmat = new Matrix4();
     this.lights = {};
+    this.light_idgen = 1;
 
     this.view3d = view3d;
     this.gl = view3d.gl;
     this.scene = view3d.ctx.scene;
 
+    this._last_envlight_hash = undefined;
+    this._last_camerahash = undefined;
+
     this.cache = new ShaderCache();
     this.rendergraph = new RenderGraph();
     this.uSample = 0.0;
+    this.maxSamples = 8;
 
     let base = this.basePass = new BasePass();
     let nor = this.norPass = new NormalPass();
@@ -336,17 +374,49 @@ export class RealtimeEngine extends RenderEngine {
 
   resetRender() {
     //console.log("reset render frame");
-    this.uSample = -1;
+    this.uSample = 0;
   }
 
-  initLights() {
+  addLight(light) {
+    let id = this._getLightId(light);
+    let rlight = new RenderLight(light, id);
+
+    this.lights[id] = rlight;
+    return rlight;
+  }
+
+  updateLight(light) {
+    let id = this._getLightId(light);
+
+    if (!(id in this.lights)) {
+      this.addLight(light);
+    }
+
+    this.lights[id].update(light, this.uSample);
+  }
+
+  updateLights() {
+    for (let k in this.lights) {
+      this.lights[k].update(this.lights[k].light, this.uSample);
+    }
+  }
+
+  _getLightId(light) {
+    if (typeof light[LightIdSymbol] === "undefined") {
+      light[LightIdSymbol] = this.light_idgen++;
+    }
+
+    return light[LightIdSymbol];
+  }
+
+  updateSceneLights() {
     let gl = this.gl, scene = this.scene;
 
     for (let light of this.scene.lights) {
-      if (!(light.lib_id in this.lights)) {
-        this.lights[light.lib_id] = new RenderLight(light);
-      } else {
-        this.lights[light.lib_id].update(light, this.uSample);
+      let id = this._getLightId(light);
+
+      if (!(id in this.lights)) {
+        this.lights[id] = new RenderLight(light, id);
       }
     }
   }
@@ -368,13 +438,25 @@ export class RealtimeEngine extends RenderEngine {
   }
 
   render(camera, gl, viewbox_pos, viewbox_size, scene, extraDrawCB) {
+    if (this._queueResetSamples) {
+      this.resetSamples();
+      this._queueResetSamples = false;
+    }
+
     this.scene = scene;
     this.gl = gl;
     this.camera = camera;
 
-    this.uSample++;
+    let hash = camera.generateUpdateHash();
+    if (hash !== this._last_camerahash) {
+      this.uSample = 0;
+      this._last_camerahash = hash;
+    }
 
-    this.initLights();
+    this.uSample++; // = Math.max((this.uSample + 1) % this.maxSamples, 1);
+
+    this.updateSceneLights();
+    this.updateLights();
     this.renderShadowMaps();
 
     this.extraDrawCB = extraDrawCB;
@@ -540,14 +622,14 @@ export class RealtimeEngine extends RenderEngine {
     let uniforms = {
       projectionMatrix : this.getProjMat(camera, viewbox_size),
       normalMatrix     : camera.normalmat,
-      uSample          : this.uSample
+      uSample          : this.uSample+1
     };
 
     LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample);
     window._debug_uniforms = uniforms;
 
     for (let ob of scene.objects.renderable) {
-      if (!(ob.data instanceof Mesh)) {
+      if (!ob.data.usesMaterial) {
         continue;
       }
 
@@ -571,14 +653,35 @@ export class RealtimeEngine extends RenderEngine {
     return nulltex;
   }
 
+  queueResetSamples() {
+    this._queueResetSamples = true;
+  }
+
   resetSamples() {
     console.log("Reset samples!");
-    this.uSample = -1;
+    this.uSample = 0;
     //window.redraw_viewport();
   }
 
   render_intern(camera, gl, viewbox_pos, viewbox_size, scene) {
     let view3d = _appstate.ctx.view3d;
+
+    let hash = this._digest;
+    hash.reset();
+
+    hash.add(scene.envlight.calcUpdateHash());
+    for (let k in this.lights) {
+      let rlight = this.lights[k];
+
+      hash.add(rlight.calcUpdateHash());
+    }
+
+    if (hash.get() !== this._last_envlight_hash) {
+      console.log("light update");
+      this._last_envlight_hash = hash.get();
+      this.resetSamples();
+    }
+
 
     this.cache.drawStart(gl);
 
@@ -588,7 +691,7 @@ export class RealtimeEngine extends RenderEngine {
       viewportSize     : viewbox_size,
       ambientColor     : scene.envlight.color,
       ambientPower     : scene.envlight.power,
-      uSample          : this.uSample
+      uSample          : this.uSample+1
     };
 
     let ao = this.aoPass.getOutput();
@@ -600,11 +703,50 @@ export class RealtimeEngine extends RenderEngine {
 
     //this.getPass(this.aoPass, uniforms);
 
-    LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample);
+    LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample+1);
     window._debug_uniforms = uniforms;
 
+    let updateMat = (mat) => {
+      let hash = mat.calcUpdateHash();
+
+      if (hash !== mat._last_update_hash) {
+        //note that the update hash changes on shader uniform changes as well as
+        //code changes, so we don't call mat.flagRegen()
+
+        console.log("Material uniform change");
+        mat._last_update_hash = hash;
+        this.queueResetSamples();
+      }
+
+      if (mat._regen && this.cache.has(mat.lib_id)) {
+        this.cache.get(mat.lib_id).destroy(gl);
+        this.cache.remove(mat.lib_id);
+      }
+
+      let program;
+
+      if (this.cache.has(mat.lib_id)) {
+        program = this.cache.get(mat.lib_id);
+      } else {
+        let shaderdef = mat.generate(scene, this.lights);
+
+        window._debug_shaderdef = shaderdef;
+
+        program = shaderdef.compile(gl);
+        program.shaderdef = shaderdef;
+
+        this.cache.add(gl, mat.lib_id, program);
+        this.queueResetSamples();
+      }
+
+      if (program !== undefined) {
+        mat._program = program;
+        program.shaderdef.setUniforms(mat.graph, program.uniforms);
+      }
+    }
+
     for (let ob of scene.objects.renderable) {
-      if (!(ob.data instanceof Mesh)) {
+      if (!ob.data.usesMaterial) {
         continue;
       }
 
@@ -613,33 +755,15 @@ export class RealtimeEngine extends RenderEngine {
 
       mat = mat === undefined ? ob.data.materials.active : mat;
 
-      if (mat !== undefined) {
-        if (mat._regen && this.cache.has(mat.lib_id)) {
-          this.cache.get(mat.lib_id).destroy(gl);
-          this.cache.remove(mat.lib_id);
-        }
-
-        if (this.cache.has(mat.lib_id)) {
-          program = this.cache.get(mat.lib_id);
-        } else {
-          let shaderdef = mat.generate(scene);
-
-          window._debug_shaderdef = shaderdef;
-
-          program = shaderdef.compile(gl);
-          program.shaderdef = shaderdef;
-
-          this.cache.add(gl, mat.lib_id, program);
-          this.resetSamples();
-        }
-
-        if (program !== undefined) {
-          program.shaderdef.setUniforms(mat.graph, program.uniforms);
-        }
+      for (let mat of ob.data.materials) {
+        updateMat(mat);
       }
 
-      if (program === undefined) {
-        program = Shaders.BasicLitMesh;
+      //TODO handle multiple materials properly
+      if (ob.data.materials.length > 0) {
+        program = ob.data.materials[0]._program;
+      } else {
+        continue;
       }
 
       uniforms.objectMatrix = ob.outputs.matrix.getValue();

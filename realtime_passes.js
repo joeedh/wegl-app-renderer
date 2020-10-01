@@ -114,9 +114,8 @@ export class OutputPass extends RenderPass {
 
     shader : `
     vec4 color = texture2D(fbo_rgba, v_Uv);
-    if (uSample > 0.0) {
-      color.rgb = color.rgb / uSample;
-    }
+    color.rgb = color.rgb / uSample;
+    color.a = 1.0;
     
 gl_FragColor = color;
 gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
@@ -394,7 +393,7 @@ export class AccumPass extends RenderPass {
 vec4 color1 = texture2D(fbo_rgba, v_Uv);
 vec4 color2 = texture2D(lastBuf, v_Uv);
 
-gl_FragColor = vec4(color1.rgb, 1.0) + vec4(color2.rgb, 1.0)*float(uSample > 0.0);
+gl_FragColor = vec4(color1.rgb, 1.0) + vec4(color2.rgb, 1.0)*float(uSample > 1.0);
 gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     `
   }}
@@ -405,13 +404,9 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     //*
     let buf = rctx.engine.passThru.outputs.fbo.getValue();
 
-    if (rctx.uSample === 0) {
-      gl.clearColor(1.0, 1.0, 1.0, 1.0);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    } else {
-      gl.clearDepth(1.0);
-      gl.clear(gl.DEPTH_BUFFER_BIT);
-    }
+    gl.clearDepth(1.0);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+
 
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(true);

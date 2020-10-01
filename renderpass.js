@@ -401,7 +401,6 @@ export class RenderGraph {
     }
 
     let rctx = this.rctx;
-
     rctx.update(gl, size);
 
     this.size[0] = ~~size[0];
