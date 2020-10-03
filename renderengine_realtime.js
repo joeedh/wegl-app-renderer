@@ -4,8 +4,9 @@ import {LightGen} from '../shadernodes/shader_lib.js';
 import {Light} from '../light/light.js';
 import {FBO} from '../core/fbo.js';
 import {FBOSocket, RenderContext, RenderGraph, RenderPass} from "./renderpass.js";
-import {BasePass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, PassThruPass} from "./realtime_passes.js";
+import {BasePass, SharpenPass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, PassThruPass} from "./realtime_passes.js";
 import {Texture, CubeTexture} from '../core/webgl.js';
+import {getFBODebug} from "../editors/debug/gldebug.js";
 
 import {Vector2, Vector3, Vector4, Quat, Matrix4} from '../util/vectormath.js';
 import * as util from '../util/util.js';
@@ -293,11 +294,43 @@ export class RenderLight {
 
 let nulltex = undefined;
 
+let sdigest = new util.HashDigest();
+
+export class RenderSettings {
+  constructor() {
+    this.sharpen = true;
+    this.filterWidth = 2.0;
+    this.sharpenWidth = 1;
+    this.sharpenFac = 0.4;
+    this.minSamples = 2;
+  }
+
+  calcUpdateHash() {
+    sdigest.reset();
+    sdigest.add(!!this.sharpen);
+    sdigest.add(this.filterWidth);
+    sdigest.add(this.sharpenWidth);
+
+    return sdigest.get();
+  }
+}
+RenderSettings.STRUCT = `
+renderengine_realtime.RenderSettings {
+  sharpen      : bool;
+  filterWidth  : float;
+  sharpenWidth : int;
+  sharpenFac   : float;
+  minSamples   : int;
+}
+`;
+nstructjs.register(RenderSettings);
+
 export class RealtimeEngine extends RenderEngine {
-  constructor(view3d) {
+  constructor(view3d, settings) {
     super();
 
     this._digest = new util.HashDigest();
+    this.renderSettings = settings ? settings : new RenderSettings();
 
     this.projmat = new Matrix4();
     this.lights = {};
@@ -313,7 +346,16 @@ export class RealtimeEngine extends RenderEngine {
     this.cache = new ShaderCache();
     this.rendergraph = new RenderGraph();
     this.uSample = 0.0;
+    this.weightSum = 0.0;
     this.maxSamples = 8;
+
+    this._last_update_hash = undefined;
+
+    this.rebuildGraph();
+  }
+
+  rebuildGraph() {
+    this.rendergraph.clear();
 
     let base = this.basePass = new BasePass();
     let nor = this.norPass = new NormalPass();
@@ -322,17 +364,18 @@ export class RealtimeEngine extends RenderEngine {
     let passThru = this.passThru = new PassThruPass();
     let ao = this.aoPass = new AOPass();
 
+    console.log("rebuild render graph");
+
     //let test = new TestPass();
 
     this.rendergraph.add(nor);
     this.rendergraph.add(out);
     this.rendergraph.add(base);
+    this.rendergraph.add(ao);
 
     nor.outputs.fbo.connect(ao.inputs.fbo);
 
-    if (0) {
-      this.rendergraph.add(ao);
-
+    if (1) {
       let blurx = new BlurPass();
       let blury = new BlurPass();
 
@@ -343,11 +386,18 @@ export class RealtimeEngine extends RenderEngine {
 
       blury.inputs.axis.setValue(1);
 
+      blury.inputs.samples.setValue(12);
+      blurx.inputs.samples.setValue(12);
+
       ao.outputs.fbo.connect(blurx.inputs.fbo);
+      //blurx.outputs.fbo.connect(blury.inputs.fbo);
+
       blurx.outputs.fbo.connect(blury.inputs.fbo);
       blury.outputs.fbo.connect(base.inputs.ao);
+
+      //ao.outputs.fbo.connect(base.inputs.ao);
+      //ao.outputs.fbo.connect(base.inputs.ao);
     } else {
-      this.rendergraph.add(ao);
       this.aoPass = ao;
       ao.outputs.fbo.connect(base.inputs.ao);
     }
@@ -359,13 +409,46 @@ export class RealtimeEngine extends RenderEngine {
       this.rendergraph.add(passThru);
 
       base.outputs.fbo.connect(accumOut.inputs.fbo);
-      accumOut.outputs.fbo.connect(passThru.inputs.fbo);
-      passThru.outputs.fbo.connect(out.inputs.fbo);
+      base.outputs.w.connect(accumOut.inputs.w);
+
+      if (this.renderSettings.sharpen) {
+        let sharpx = new SharpenPass();
+        let sharpy = new SharpenPass();
+
+        this.rendergraph.add(sharpx);
+        this.rendergraph.add(sharpy);
+
+        this.sharpx = sharpx;
+        this.sharpy = sharpy;
+
+        this.updateSharpen();
+
+        sharpy.inputs.axis.setValue(1);
+
+        accumOut.outputs.fbo.connect(passThru.inputs.fbo);
+        passThru.outputs.fbo.connect(sharpx.inputs.fbo);
+
+        sharpx.outputs.fbo.connect(sharpy.inputs.fbo);
+        sharpy.outputs.fbo.connect(out.inputs.fbo);
+      } else {
+        accumOut.outputs.fbo.connect(passThru.inputs.fbo);
+        passThru.outputs.fbo.connect(out.inputs.fbo);
+      }
     } else {
       base.outputs.fbo.connect(out.inputs.fbo);
       //ao.outputs.fbo.disconnect();
       //ao.outputs.fbo.connect(out.inputs.fbo);
     }
+
+    this._last_update_hash = this.renderSettings.calcUpdateHash();
+  }
+
+  updateSharpen() {
+    this.sharpx.inputs.samples.setValue(this.renderSettings.sharpenWidth);
+    this.sharpy.inputs.samples.setValue(this.renderSettings.sharpenWidth);
+
+    this.sharpx.inputs.factor.setValue(this.renderSettings.sharpenFac);
+    this.sharpy.inputs.factor.setValue(this.renderSettings.sharpenFac);
   }
 
   update(gl) {
@@ -375,6 +458,7 @@ export class RealtimeEngine extends RenderEngine {
   resetRender() {
     //console.log("reset render frame");
     this.uSample = 0;
+    this.weightSum = 0.0;
   }
 
   addLight(light) {
@@ -425,7 +509,8 @@ export class RealtimeEngine extends RenderEngine {
     let gl = this.gl, scene = this.scene;
 
     for (let light of this.scene.lights) {
-      let rlight = this.lights[light.lib_id];
+      let id = this._getLightId(light);
+      let rlight = this.lights[id];
 
       if (rlight === undefined) {
         console.warn("Render light missing", light.lib_id, light.name, light);
@@ -438,10 +523,33 @@ export class RealtimeEngine extends RenderEngine {
   }
 
   render(camera, gl, viewbox_pos, viewbox_size, scene, extraDrawCB) {
-    if (this._queueResetSamples) {
+    let shash = this.renderSettings.calcUpdateHash();
+    if (this._last_update_hash !== shash) {
+      this.rebuildGraph();
+      this.resetSamples();
+      this._queueResetSamples = false;
+    } else if (this._queueResetSamples) {
       this.resetSamples();
       this._queueResetSamples = false;
     }
+
+    if (this.renderSettings.sharpen) {
+      this.updateSharpen();
+    }
+
+    if (this.uSample >= this.renderSettings.minSamples) {
+      this._render(...arguments);
+      return;
+    }
+
+    let max = 1000;
+
+    while (this.uSample < this.renderSettings.minSamples && max--) {
+      this._render(...arguments);
+    }
+  }
+
+  _render(camera, gl, viewbox_pos, viewbox_size, scene, extraDrawCB) {
 
     this.scene = scene;
     this.gl = gl;
@@ -450,6 +558,7 @@ export class RealtimeEngine extends RenderEngine {
     let hash = camera.generateUpdateHash();
     if (hash !== this._last_camerahash) {
       this.uSample = 0;
+      this.weightSum = 0.0;
       this._last_camerahash = hash;
     }
 
@@ -469,6 +578,19 @@ export class RealtimeEngine extends RenderEngine {
       if (node instanceof OutputPass) {
         output = node;
         break;
+      } else {
+        for (let k in node.outputs) {
+          let sock = node.outputs[k];
+          if (sock instanceof FBOSocket) {
+            let fbo = sock.data;
+            if (fbo.fbo && fbo.gl) {
+              let name = node.getDebugName(); //constructor.nodedef().name;
+
+              name = `${name}_${k}`;
+              getFBODebug(gl).pushFBO(name, fbo);
+            }
+          }
+        }
       }
     }
 
@@ -480,10 +602,13 @@ export class RealtimeEngine extends RenderEngine {
       let rctx = this.rendergraph.rctx;
 
       gl.disable(gl.DEPTH_TEST);
-      gl.enable(gl.BLEND);
-      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+      gl.depthMask(false);
 
       rctx.drawFinalQuad(output.outputs.fbo.getValue());
+
+      getFBODebug(gl).pushFBO("render_final", output.outputs.fbo.getValue());
+      //will only push and copy fbo if a debug editor is open
     }
   }
 
@@ -660,10 +785,11 @@ export class RealtimeEngine extends RenderEngine {
   resetSamples() {
     console.log("Reset samples!");
     this.uSample = 0;
+    this.weightSum = 0.0;
     //window.redraw_viewport();
   }
 
-  render_intern(camera, gl, viewbox_pos, viewbox_size, scene) {
+  render_intern(camera, gl, viewbox_pos, viewbox_size, scene, shiftx=0, shifty=0) {
     let view3d = _appstate.ctx.view3d;
 
     let hash = this._digest;
@@ -685,8 +811,17 @@ export class RealtimeEngine extends RenderEngine {
 
     this.cache.drawStart(gl);
 
+    let matrix = new Matrix4(this.getProjMat(camera, viewbox_size));
+    let mat2 = new Matrix4();
+
+    shiftx = (shiftx/viewbox_size[0])*0.5;
+    shifty = (shifty/viewbox_size[1])*0.5;
+
+    mat2.translate(shiftx, shifty, 0.0);
+    matrix.preMultiply(mat2);
+
     let uniforms = {
-      projectionMatrix : this.getProjMat(camera, viewbox_size),
+      projectionMatrix : matrix,
       normalMatrix     : camera.normalmat,
       viewportSize     : viewbox_size,
       ambientColor     : scene.envlight.color,
@@ -772,6 +907,7 @@ export class RealtimeEngine extends RenderEngine {
     }
 
     this.cache.drawEnd(gl);
+    return matrix;
   }
 
   destroy(gl) {

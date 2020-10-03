@@ -73,6 +73,7 @@ export class RenderContext {
     this.pipeline = new FramePipeline(size[0], size[1]);
 
     this.uSample = 0;
+    this.weightSum = 0.0;
 
     this.update(gl, size);
   }
@@ -80,7 +81,9 @@ export class RenderContext {
   update(gl, size) {
     let width = size[0], height = size[1];
     let drawmats = this.drawmats;
+
     this.uSample = this.engine.uSample;
+    this.weightSum = this.engine.weightSum;
 
     if (this.smesh === undefined || this.size[0] != width || this.size[1] != height) {
       this.size[0] = width;
@@ -166,10 +169,14 @@ export class RenderContext {
 
     //gl.enable(gl.DEPTH_TEST);
     //gl.depthMask(true);
-    //gl.disable(gl.DEPTH_TEST);
-    //gl.depthMask(false);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.DITHER);
+    gl.disable(gl.BLEND);
+    gl.depthMask(false);
 
     drawfunc(gl);
+    gl.finish();
 
     //window.gldebug_sample();
     fbo.unbind(gl);
@@ -181,6 +188,10 @@ export class RenderPass extends Node {
     super();
 
     this.uniforms = {};
+  }
+
+  getDebugName() {
+    return this.constructor.nodedef().name;
   }
 
   getOutput() {
@@ -221,6 +232,11 @@ export class RenderPass extends Node {
     let samplers = '';
     for (let k in this.inputs) {
       if (!(this.inputs[k] instanceof FBOSocket)) {
+        let sock = this.inputs[k];
+
+        for (let e of sock.edges) {
+          sock.setValue(e.getValue());
+        }
         continue;
       }
 
@@ -369,20 +385,13 @@ void main(void) {
     rctx.renderStage(this.outputs.fbo.data, render);
     gl.finish();
 
-    //don't use NodeSocketType.prototype.graphUpdate, it likes to copy values
     for (let k in this.outputs) {
       let sock = this.outputs[k];
 
-      if (sock instanceof FBOSocket) {
-        for (let e of sock.edges) {
-          e.data = sock.data;
-          e.node.graphUpdate();
-        }
-      } else {
-        sock.graphUpdate();
+      //sock.graphUpdate();
+      for (let e of sock.edges) {
+        e.setValue(sock.getValue());
       }
-
-      sock.node.graphUpdate();
     }
   }
 }
@@ -393,6 +402,10 @@ export class RenderGraph {
     this.smesh = undefined;
     this.uniforms = {};
     this.size = [512, 512];
+  }
+
+  clear() {
+    this.graph.clear();
   }
 
   exec(gl, engine, size, drawmats, scene) {
@@ -425,10 +438,25 @@ export class RenderGraph {
     for (let node of this.graph.sortlist) {
       if (node.constructor.name === "OutputPass") {
         rec(node);
+        break;
       }
     }
 
-    this.graph.exec(this.rctx);
+    //*
+    for (let node of this.graph.sortlist) {
+      if (node.graph_flag & NodeFlags.UPDATE) {
+        node.exec(rctx);
+
+        for (let k in node.outputs) {
+          let sock = node.outputs[k];
+
+          for (let e of sock.edges) {
+            e.setValue(sock.getValue());
+          }
+        }
+      }
+    }
+    //this.graph.exec(this.rctx);
   }
 
   add(node) {

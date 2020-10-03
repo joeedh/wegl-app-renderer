@@ -16,6 +16,146 @@ import {FloatSocket} from "../core/graphsockets.js";
 
 let zero = new Vector2([0, 0]);
 
+let makeBlue = (totpoint) => {
+  let dimen = Math.sqrt(totpoint);
+  dimen = Math.ceil(Math.max(dimen, 2.0));
+
+  let PX=0, PY=1, PTOT=2;
+
+  let r = 1.0 / dimen;
+  let rsqr = r*r;
+
+  let ps = new Float64Array(PTOT*totpoint);
+
+  for (let pi=0; pi<ps.length; pi += PTOT) {
+    let x = Math.random(), y = Math.random();
+
+    let th = x*Math.PI*2.0;
+    let r = y;
+
+    x = Math.cos(th)*r;
+    y = Math.sin(th)*r;
+
+    ps[pi+PX] = x;
+    ps[pi+PY] = y;
+  }
+
+  function getr(x, y) {
+    let d = Math.sqrt(x*x + y*y);
+
+    d = d*d*(3.0 - 2.0*d);
+
+    return r + d*r*3;
+  }
+
+  let do_step = () => {
+    //return;
+    for (let pi1=0; pi1<ps.length; pi1 += PTOT) {
+      let x1 = ps[pi1+PX], y1 = ps[pi1+PY];
+      let sumx=0, sumy=0, tot=0;
+
+      let d = 2.0 - Math.sqrt((x1-0.5)**2 + (y1-0.5)**2) / Math.sqrt(2.0);
+      let r1 = getr(x1, y1);
+
+      ps[pi1+PX] -= x1*0.005;
+      ps[pi1+PY] -= y1*0.005;
+
+      for (let pi2 = 0; pi2 < ps.length; pi2 += PTOT) {
+        let x2 = ps[pi2 + PX], y2 = ps[pi2 + PY];
+
+        if (pi1 === pi2) {
+          continue;
+        }
+
+        let r2 = getr(x2, y2);
+
+        let rtest = (r1 + r2)*0.5;
+
+        if (isNaN(rtest)) {
+          //throw new Error();
+        }
+
+        if (rtest == 0.0 || isNaN(rtest)) {
+          continue;
+        }
+
+        let dx = x1 - x2;
+        let dy = y1 - y2;
+
+        let dis = dx * dx + dy * dy;
+
+        if (dis > rtest*rtest) {
+          continue;
+        }
+
+        dis = Math.sqrt(dis);
+        let w = 1.0 - dis / rtest;
+        //w = Math.pow(w, 500.0)
+        w = w*w*(3.0 - 2.0*w);
+        w *= w;
+
+        sumx += dx * w;
+        sumy += dy * w;
+        tot += w;
+      }
+
+      if (!tot) {
+        continue;
+      }
+
+      sumx /= tot;
+      sumy /= tot;
+
+      ps[pi1+PX] += sumx*0.14;
+      ps[pi1+PY] += sumy*0.14;
+    }
+  }
+
+  for (let step=0; step<40; step++) {
+    do_step()
+  }
+
+  let len = 0.0;
+  for (let pi=0; pi<ps.length; pi += PTOT) {
+    let x = ps[pi+PX], y = ps[pi+PY];
+    let d = x*x + y*y;
+
+    len = Math.max(len, d);
+  }
+  len = Math.sqrt(len);
+
+  let ret = [];
+  for (let pi=0; pi<ps.length; pi += PTOT) {
+    let x = ps[pi+PX]/len;
+    let y = ps[pi+PY]/len;
+    let w = Math.sqrt(x*x + y*y);
+
+    ret.push([x, y, w]);
+  }
+
+  return ret;
+}
+window.makeBlue = makeBlue;
+
+let jcache = {};
+let getJitterSamples = (totpoint) => {
+  if (totpoint in jcache) {
+    return jcache[totpoint];
+  }
+
+  console.log("making new jitter sample set of size " + totpoint);
+
+  if (totpoint < 2) {
+    jcache[totpoint] = [0, 0, 1];
+  } else {
+    jcache[totpoint] = makeBlue(totpoint);
+  }
+
+  return jcache[totpoint];
+}
+window.getJitterSamples = getJitterSamples;
+
+
 export class BasePass extends RenderPass {
   constructor() {
     super();
@@ -29,7 +169,7 @@ export class BasePass extends RenderPass {
       normal  : new FBOSocket()
     }),
     outputs : Node.inherit({
-
+      w : new FloatSocket()
     }),
     shader : ``
   }}
@@ -49,11 +189,34 @@ export class BasePass extends RenderPass {
     gl.enable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
 
-    //console.log("base pass exec!");
-    rctx.engine.render_intern(rctx.drawmats, rctx.gl, zero, rctx.size, rctx.scene);
+    let jit = getJitterSamples(55);
+    let shift = jit[rctx.uSample % jit.length];
+    let scale = 2.0 / Math.sqrt(jit.length);
+
+    let r = 2.0;
+
+    let shiftx = (shift[0]+(Math.random()-0.5)*scale)*r;
+    let shifty = (shift[1]+(Math.random()-0.5)*scale)*r;
+    let projectionMatrix = rctx.engine.render_intern(rctx.drawmats, rctx.gl, zero, rctx.size, rctx.scene, shiftx, shifty);
+
+    let w = shift[2];
+
+    /*
+    //apply some sharpening in the pixel accumulation filter
+
+    //sinc function
+    w = 1.0 - Math.min(Math.sin(w*Math.PI) / (w*Math.PI), 1.0);
+    //w = w*w*(3.0 - 2.0*w);
+    //make sure it dips below zero
+    w -= 0.2
+    */
+
+    this.outputs.w.setValue(w);
 
     if (rctx.engine.extraDrawCB) {
-      rctx.engine.extraDrawCB();
+      rctx.engine.extraDrawCB(new Matrix4(projectionMatrix));
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
     }
   }
 }
@@ -106,17 +269,40 @@ export class OutputPass extends RenderPass {
     uiname : "Output Pass",
     name   : "output_pass",
     inputs : Node.inherit({
-
     }),
     outputs : Node.inherit({
 
     }),
 
+    shaderPre : `
+    uniform float weightSum;
+    
+    float hashrand(vec2 uv) {
+      float f = fract(uSample*sqrt(3.0) + uv[0]*sqrt(3.0) + uv[1]*sqrt(5.0));
+      
+      return fract(1.0 / (f*0.00001 + 0.000001));
+    }
+    `,
+
     shader : `
     vec4 color = texture2D(fbo_rgba, v_Uv);
-    color.rgb = color.rgb / uSample;
+    color.rgb = color.rgb / weightSum;
     color.a = 1.0;
     
+    //dither
+#if 0
+    float sc = max(2.0, 20.0 - uSample);
+    float f = (hashrand(v_Uv)-0.5)*sc/255.0;
+    float f2 = (hashrand(v_Uv+vec2(0.234, 0.523))-0.5)*sc/255.0;
+    float f3 = (hashrand(v_Uv+vec2(0.313, -0.323))-0.5)*sc/255.0;
+    color[0] += f;
+    color[1] += f2;
+    color[2] += f3;
+    
+    for (int i=0; i<3; i++) {
+      //color[i] = floor(color[i]*255.0)/255.0;
+    }
+#endif
 gl_FragColor = color;
 gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     `
@@ -129,6 +315,8 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     gl.disable(gl.BLEND);
 
     gl.depthMask(true);
+
+    this.uniforms.weightSum = rctx.weightSum;
 
     super.renderIntern(rctx);
 
@@ -156,8 +344,9 @@ uniform float factor;
 uniform float steps;
 //const float dist=2.0, factor=2.5, steps=1024.0;
 
-const int samples=24;
-const float seed1=0.23432, seed2=1.2342;
+#define samples 2
+#define seed1 0.23432
+#define seed2=1.2342
 
 
 vec4 unproject(vec4 p) {
@@ -233,11 +422,7 @@ float rand(float x, float y, float seed) {
   float tot = 0.0;
   vec3 nin = texture2D(fbo_rgba, v_Uv).rgb*2.0 - 1.0; 
   
-  for (int i=0; i<256; i++) {
-    if (i > samples) {
-      break;
-    }
-    
+  for (int i=0; i<samples; i++) {
     vec3 n;
     n[0] = rand(v_Uv[0], v_Uv[1], seed)-0.5;
     n[1] = rand(v_Uv[0], v_Uv[1], seed+1.0)-0.5;
@@ -275,11 +460,15 @@ float rand(float x, float y, float seed) {
     tot += 1.0;
   }
 
-  f /= tot;
+  f = tot == 0.0 ? 1.0 : f / tot;
+  f = min(f, 1.0);
+  
   f = pow(1.0 - f, factor);
 
   //f = rand(v_Uv[0], v_Uv[1], 0.0);
-  
+  f = clamp(f, 0.0, 1.0);
+  f = isnan(f) ? 1.0 : f;
+   
   vec4 color = texture2D(fbo_rgba, v_Uv);
   gl_FragColor = vec4(f, f, f, 1.0);
   
@@ -287,7 +476,8 @@ float rand(float x, float y, float seed) {
   //gl_FragColor = vec4(texture2D(fbo_rgba, v_Uv).rgb, 1.0);
   
   gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
-  `
+  
+`
   }}
 
   renderIntern(rctx) {
@@ -312,13 +502,21 @@ export class BlurPass extends RenderPass {
     super();
   }
 
+  getDebugName() {
+    if (this.inputs.axis.getValue() === 1) {
+      return "blur_y";
+    } else {
+      return "blur_x";
+    }
+  }
+
   static nodedef() {return {
     uiname : "Blur Pass",
     name   : "blur_pass",
 
     inputs : Node.inherit({
-      axis    : new FloatSocket(),
-      samples : new FloatSocket(undefined, undefined, 8)
+      axis    : new FloatSocket(undefined, undefined, 0),
+      samples : new FloatSocket(undefined, undefined, 3)
     }),
 
     outputs : Node.inherit({
@@ -327,6 +525,10 @@ export class BlurPass extends RenderPass {
 
     shaderPre : `
        
+    `,
+    shader2: `
+      gl_FragColor = vec4(1.0, 0.75, 0.45, 1.0); //texture2D(fbo_rgba, v_Uv);
+      gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     `,
     shader : `
     
@@ -337,9 +539,10 @@ export class BlurPass extends RenderPass {
       
     for (int i=-BLUR_SAMPLES; i<BLUR_SAMPLES; i++) {
       float w = 1.0 - abs(float(i) / float(BLUR_SAMPLES));
-      w = w*(1.0 - isamp) + isamp;
+      //w = w*(1.0 - isamp) + isamp;
       
       //w = w*w*(3.0 - 2.0*w);
+      //w = 1.0;
       vec2 p2 = p;
       
       p2[BLUR_AXIS] += float(i);
@@ -352,6 +555,7 @@ export class BlurPass extends RenderPass {
     
     accum /= tot;
     
+    //gl_FragColor = vec4(1.0, 0.75, 0.45, 1.0);
     gl_FragColor = accum;
     gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     `,
@@ -363,10 +567,81 @@ export class BlurPass extends RenderPass {
     shaderPre += "#define BLUR_SAMPLES " + (~~this.inputs.samples.getValue()) + "\n";
 
     if (this.inputs.axis.getValue() === 0.0) {
-      shaderPre += "#define BLUR_AXIS 0\n" + shaderPre;
+      shaderPre = "#define BLUR_AXIS 0\n" + shaderPre;
     } else {
-      shaderPre += "#define BLUR_AXIS 1\n" + shaderPre;
+      shaderPre = "#define BLUR_AXIS 1\n" + shaderPre;
     }
+
+    this.shaderPre = shaderPre;
+    super.renderIntern(rctx);
+  }
+}
+
+export class SharpenPass extends RenderPass {
+  constructor() {
+    super();
+  }
+
+  static nodedef() {return {
+    uiname : "Sharpen Pass",
+    name   : "sharpen",
+
+    inputs : Node.inherit({
+      axis    : new FloatSocket(),
+      samples : new FloatSocket(undefined, undefined, 1),
+      factor  : new FloatSocket("factor", undefined, 0.5)
+    }),
+
+    outputs : Node.inherit({
+
+    }),
+
+    shaderPre : `
+    uniform float sharpen;
+    `,
+    uniforms : {'sharpen' : 0.5},
+    shader : `
+    
+    vec4 accum;
+    float tot=0.0;
+    vec2 p = v_Uv * size;
+    const float isamp = 1.0 / float(SAMPLES);
+      
+    for (int i=-SAMPLES; i<SAMPLES; i++) {
+      float w = 1.0 - abs(float(i) / float(SAMPLES));
+      //w = w*(1.0 - isamp) + isamp;
+      
+      w = w*w*(3.0 - 2.0*w);
+      w -= 0.4;
+      vec2 p2 = p;
+      
+      p2[AXIS] += float(i);
+      
+      vec4 color = texture2D(fbo_rgba, p2 / size);
+      
+      accum += color*w;
+      tot += w;
+    }
+    
+    accum /= tot;
+    
+    gl_FragColor = accum + (texture2D(fbo_rgba, v_Uv) - accum)*(1.0 - sharpen);
+    gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
+    `,
+  }}
+
+  renderIntern(rctx) {
+    let shaderPre = this.constructor.nodedef().shaderPre;
+
+    shaderPre += "#define SAMPLES " + (~~this.inputs.samples.getValue()) + "\n";
+
+    if (this.inputs.axis.getValue() === 0.0) {
+      shaderPre = "#define AXIS 0\n" + shaderPre;
+    } else {
+      shaderPre = "#define AXIS 1\n" + shaderPre;
+    }
+
+    this.uniforms.sharpen = this.inputs.factor.getValue();
 
     this.shaderPre = shaderPre;
     super.renderIntern(rctx, false);
@@ -382,24 +657,36 @@ export class AccumPass extends RenderPass {
     uiname : "Accum Pass",
     name   : "accum_pass",
     inputs : Node.inherit({
+      w : new FloatSocket()
     }),
     outputs : Node.inherit({
     }),
     shaderPre : `
     uniform sampler2D lastBuf;
+    uniform float weight;
+    uniform float weightSum;
     `,
     shader : `
     
 vec4 color1 = texture2D(fbo_rgba, v_Uv);
 vec4 color2 = texture2D(lastBuf, v_Uv);
 
-gl_FragColor = vec4(color1.rgb, 1.0) + vec4(color2.rgb, 1.0)*float(uSample > 1.0);
+if (isnan(dot(color1, color1))) {
+  gl_FragColor = vec4(color2.rgb, 1.0) + vec4(color2.rgb, 1.0) / (weightSum == 0.0 ? 1.0 : weightSum);
+} else {
+  gl_FragColor = vec4(color1.rgb, 1.0)*weight + vec4(color2.rgb, 1.0)*float(uSample > 1.0);
+}
 gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     `
   }}
 
   renderIntern(rctx) {
     let gl = rctx.gl;
+
+    rctx.engine.weightSum += this.inputs.w.getValue();
+    rctx.weightSum = rctx.engine.weightSum;
+
+    this.uniforms.weight = this.inputs.w.getValue();
 
     //*
     let buf = rctx.engine.passThru.outputs.fbo.getValue();
@@ -414,6 +701,7 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     gl.disable(gl.BLEND);
 
     if (buf.texColor) {
+      this.uniforms.weightSum = rctx.weightSum;
       this.uniforms.lastBuf = buf.texColor;
     }
     //*/
