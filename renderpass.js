@@ -70,7 +70,6 @@ export class RenderContext {
     this.smesh = undefined;
     this.engine = engine;
     this.size = [size[0], size[1]];
-    this.pipeline = new FramePipeline(size[0], size[1]);
 
     this.uSample = 0;
     this.weightSum = 0.0;
@@ -115,6 +114,11 @@ export class RenderContext {
         [0,0,0],
       );
     }
+
+    this.smesh.uniforms = {};
+    this.smesh.uniforms.uSample = this.uSample;
+    this.smesh.uniforms.size = this.size;
+    this.smesh.uniforms.projectionMatrix = drawmats.rendermat;
   }
 
   drawQuad(program) {
@@ -415,6 +419,10 @@ export class RenderGraph {
 
     let rctx = this.rctx;
     rctx.update(gl, size);
+
+    rctx.drawmats = drawmats;
+    rctx.size[0] = ~~size[0];
+    rctx.size[1] = ~~size[1];
 
     this.size[0] = ~~size[0];
     this.size[1] = ~~size[1];

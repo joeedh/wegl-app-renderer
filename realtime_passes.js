@@ -236,10 +236,8 @@ export class NormalPass extends RenderPass {
     outputs : Node.inherit({
 
     }),
-    shader : `
-gl_FragColor = texture2D(fbo_rgba, v_Uv);
-gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
-    `
+    shaderPre : ``,
+    shader : ``
   }}
 
   renderIntern(rctx) {
@@ -470,13 +468,6 @@ float rand(float x, float y, float seed) {
   renderIntern(rctx) {
     let gl = rctx.gl;
 
-    gl.clearDepth(1.0);
-    gl.clearColor(1.0, 1.0, 1.0, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    gl.depthMask(true);
-
-
     setBlueUniforms(this.uniforms, rctx.size, getBlueMask(gl), rctx.uSample);
 
     this.uniforms.factor = rctx.scene.envlight.ao_fac;
@@ -555,6 +546,116 @@ export class BlurPass extends RenderPass {
     let shaderPre = this.constructor.nodedef().shaderPre;
 
     shaderPre += "#define BLUR_SAMPLES " + (~~this.inputs.samples.getValue()) + "\n";
+
+    if (this.inputs.axis.getValue() === 0.0) {
+      shaderPre = "#define BLUR_AXIS 0\n" + shaderPre;
+    } else {
+      shaderPre = "#define BLUR_AXIS 1\n" + shaderPre;
+    }
+
+    this.shaderPre = shaderPre;
+    super.renderIntern(rctx);
+  }
+}
+
+export class DenoiseBlur extends RenderPass {
+  constructor() {
+    super();
+  }
+
+  getDebugName() {
+    if (this.inputs.axis.getValue() === 1) {
+      return "blur_y";
+    } else {
+      return "blur_x";
+    }
+  }
+
+  static nodedef() {return {
+    uiname : "Denoise Blur",
+    name   : "denoise_blur",
+
+    //expects .fbo input to have the depth in the alpha component
+    inputs : Node.inherit({
+      axis    : new FloatSocket(undefined, undefined, 0),
+      samples : new FloatSocket(undefined, undefined, 3),
+      depthScale : new FloatSocket(undefined, undefined, 10.0),
+      depthOffset : new FloatSocket(undefined, undefined, -0.9)
+
+    }),
+
+    outputs : Node.inherit({
+
+    }),
+
+    shaderPre : ``,
+       
+    shader : `
+    
+    vec4 accum;
+    float tot=0.0;
+    vec2 p = v_Uv * size;
+    const float isamp = 1.0 / float(BLUR_SAMPLES);
+ 
+    vec4 samp = texture2D(fbo_rgba, v_Uv);
+    float d = samp[2];
+    float persw = samp[3];
+    
+    //XXX scale depth range properly
+    
+    d = (d + DEPTH_OFFSET)*DEPTH_SCALE;
+    
+    for (int i=-BLUR_SAMPLES; i<BLUR_SAMPLES; i++) {
+      float w = 1.0 - abs(float(i) / float(BLUR_SAMPLES));
+      //w = w*(1.0 - isamp) + isamp;
+      
+      //w = w*w*(3.0 - 2.0*w);
+      //w = 1.0;
+      vec2 p2 = p;
+      
+      p2[BLUR_AXIS] += float(i);//persw;
+      
+      vec4 color = texture2D(fbo_rgba, p2 / size);
+      float d2 = color[2];
+      d2 = (d2 + DEPTH_OFFSET)*DEPTH_SCALE;
+      
+      color[0] *= d2 < 0.00001 ? 0.0001 : d2;
+      
+      accum += color*w;
+      tot += w;
+    }
+    
+    accum /= tot;
+    accum /= d == 0.0 ? 0.0001 : d;
+    
+    //gl_FragColor = vec4(1.0, 0.75, 0.45, 1.0);
+    //accum = vec4(d, d, d, 1.0);
+#if BLUR_AXIS == 0
+    gl_FragColor = vec4(accum[0], accum[0], d, persw);
+#else
+    gl_FragColor = vec4(accum[0], accum[0], accum[0], 1.0);
+#endif
+    gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
+    `,
+  }}
+
+  renderIntern(rctx) {
+    let shaderPre = this.constructor.nodedef().shaderPre;
+
+    shaderPre += "#define BLUR_SAMPLES " + (~~this.inputs.samples.getValue()) + "\n";
+
+    let scale = this.inputs.depthScale.getValue().toString();
+    if (scale.search(/\./) < 0) {
+      scale += ".0";
+    }
+
+    shaderPre += "#define DEPTH_SCALE " + scale + "\n";
+
+    let off = this.inputs.depthOffset.getValue().toString();
+    if (off.search(/\./) < 0) {
+      off += ".0";
+    }
+    shaderPre += "#define DEPTH_OFFSET " + off + "\n";
 
     if (this.inputs.axis.getValue() === 0.0) {
       shaderPre = "#define BLUR_AXIS 0\n" + shaderPre;

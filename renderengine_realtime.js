@@ -4,7 +4,7 @@ import {LightGen} from '../shadernodes/shader_lib.js';
 import {Light} from '../light/light.js';
 import {FBO} from '../core/fbo.js';
 import {FBOSocket, RenderContext, RenderGraph, RenderPass} from "./renderpass.js";
-import {BasePass, SharpenPass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, PassThruPass} from "./realtime_passes.js";
+import {BasePass, SharpenPass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, DenoiseBlur, PassThruPass} from "./realtime_passes.js";
 import {Texture, CubeTexture} from '../core/webgl.js';
 import {getFBODebug} from "../editors/debug/gldebug.js";
 
@@ -376,8 +376,8 @@ export class RealtimeEngine extends RenderEngine {
     nor.outputs.fbo.connect(ao.inputs.fbo);
 
     if (1) {
-      let blurx = new BlurPass();
-      let blury = new BlurPass();
+      let blurx = new DenoiseBlur();
+      let blury = new DenoiseBlur();
 
       this.aoPass = blury;
 
