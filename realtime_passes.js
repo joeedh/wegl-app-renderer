@@ -1,6 +1,6 @@
 import {DataBlock, DataRef} from '../core/lib_api.js';
 import {loadShader, Shaders} from '../shaders/shaders.js';
-import {LightGen} from '../shadernodes/shader_lib.js';
+import {LightGen, getBlueMaskDef, setBlueUniforms, getBlueMask} from '../shadernodes/shader_lib.js';
 import {FBO} from '../core/fbo.js';
 
 import {Vector2, Vector3, Vector4, Quat, Matrix4} from '../util/vectormath.js';
@@ -339,9 +339,12 @@ export class AOPass extends RenderPass {
     outputs : Node.inherit({}),
     shaderPre : `
     
+    ${getBlueMaskDef().shaderPre}
+    
 uniform float dist;
 uniform float factor;
 uniform float steps;
+
 //const float dist=2.0, factor=2.5, steps=1024.0;
 
 #define samples 2
@@ -366,44 +369,28 @@ float sample_blue(vec2 uv) {
 }
 #endif
 
-float rand1(float seed) {
-  seed += 1.0 + uSample*sqrt(3.0);
-  seed = fract(seed*0.00134234 + seed*0.1234543 + seed*10.23432423 + seed);
-  
-  seed = 1.0 / (0.00001*seed + 0.00001);
-  return fract(fract(seed*3.234324)*5.234324);
-}
-
-float nrand1(float seed) {
-  return (rand1(seed)*0.5 + rand1(seed+0.5)*0.5);
-}
-float wrand(float x, float y, float seed) {
-  seed += fract(uSample*0.01 + uSample*sqrt(2.0));
-#if 0    
-  float b = sample_blue(v_Uv);
-  
-  //b = rand1(x*y + x + y);
-  b = floor(b * steps)/steps;
-  //b *= 100.0;
-  float f = rand1(b + seed); //*0.01 + seed*0.1 + seed);
-  
-  return f;
-#endif
-  float f = 0.0;
-  float white = rand1((seed+x+11.2342) * (y-seed+13.23432)*0.001);
-  
-  f += (rand1(seed + x*y) - f)*0.5;
-  f += (white - f)*0.5;
-  //f = white;
-  
-  f = fract(1.0 / (0.00001*f + 0.00001));
-  return f;
-}
-
 float rand(float x, float y, float seed) {
-  //return (wrand(x, y, seed) + wrand(x, y, seed+0.5523) + wrand(x, y, seed+0.8324)) / 3.0;
-  seed += uSample;
-  return wrand(x, y, seed);
+  //partially de-correlate with blue noise mask
+  float sf = sampleBlue(vec2(x, y))[0];
+
+  
+  //squish blue noise range
+  sf = floor(sf*14.0)/14.0;
+  
+  //add uSample
+  sf += fract(uSample*sqrt(3.0))*0.1;
+  
+  //sf = 0.0;
+  //sf = fract(x*sqrt(3.0) + y*sqrt(5.0) + uSample*0.25*sqrt(3.0));
+  //sf = fract(1.0 / (sf*0.001 + 0.000001));
+  
+  seed += sf*10.0; 
+  
+  float f = fract(seed*sqrt(3.0));
+
+  f = fract(1.0 / (f*0.00001 + 0.00001));
+  
+  return f;
 }
 
     `,
@@ -488,6 +475,9 @@ float rand(float x, float y, float seed) {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     gl.depthMask(true);
+
+
+    setBlueUniforms(this.uniforms, rctx.size, getBlueMask(gl), rctx.uSample);
 
     this.uniforms.factor = rctx.scene.envlight.ao_fac;
     this.uniforms.dist = rctx.scene.envlight.ao_dist;
@@ -662,6 +652,9 @@ export class AccumPass extends RenderPass {
     outputs : Node.inherit({
     }),
     shaderPre : `
+    
+    ${getBlueMaskDef().shaderPre}
+    
     uniform sampler2D lastBuf;
     uniform float weight;
     uniform float weightSum;
@@ -672,7 +665,7 @@ vec4 color1 = texture2D(fbo_rgba, v_Uv);
 vec4 color2 = texture2D(lastBuf, v_Uv);
 
 if (isnan(dot(color1, color1))) {
-  gl_FragColor = vec4(color2.rgb, 1.0) + vec4(color2.rgb, 1.0) / (weightSum == 0.0 ? 1.0 : weightSum);
+  gl_FragColor = vec4(color2.rgb, 1.0)*((weightSum+weight)/weightSum);
 } else {
   gl_FragColor = vec4(color1.rgb, 1.0)*weight + vec4(color2.rgb, 1.0)*float(uSample > 1.0);
 }
@@ -684,9 +677,12 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     let gl = rctx.gl;
 
     rctx.engine.weightSum += this.inputs.w.getValue();
+    rctx.engine.weightSum  = Math.max(rctx.engine.weightSum, 0.0001);
     rctx.weightSum = rctx.engine.weightSum;
 
     this.uniforms.weight = this.inputs.w.getValue();
+
+    setBlueUniforms(this.uniforms, rctx.size, getBlueMask(gl), rctx.uSample);
 
     //*
     let buf = rctx.engine.passThru.outputs.fbo.getValue();
@@ -703,6 +699,7 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
     if (buf.texColor) {
       this.uniforms.weightSum = rctx.weightSum;
       this.uniforms.lastBuf = buf.texColor;
+
     }
     //*/
 

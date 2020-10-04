@@ -386,8 +386,8 @@ export class RealtimeEngine extends RenderEngine {
 
       blury.inputs.axis.setValue(1);
 
-      blury.inputs.samples.setValue(12);
-      blurx.inputs.samples.setValue(12);
+      blury.inputs.samples.setValue(6);
+      blurx.inputs.samples.setValue(6);
 
       ao.outputs.fbo.connect(blurx.inputs.fbo);
       //blurx.outputs.fbo.connect(blury.inputs.fbo);
@@ -506,6 +506,7 @@ export class RealtimeEngine extends RenderEngine {
   }
 
   renderShadowMaps() {
+    return;
     let gl = this.gl, scene = this.scene;
 
     for (let light of this.scene.lights) {
