@@ -121,7 +121,7 @@ export class RenderContext {
     this.smesh.uniforms.projectionMatrix = drawmats.rendermat;
   }
 
-  drawQuad(program) {
+  drawQuad(program, size) {
     if (program === undefined || this.smesh === undefined || this.gl === undefined) {
       console.warn("eek!", program);
       return;
@@ -130,7 +130,7 @@ export class RenderContext {
     let gl = this.gl;
 
     this.smesh.uniforms.uSample = this.uSample;
-    this.smesh.uniforms.size = this.size;
+    this.smesh.uniforms.size = size;
     this.smesh.program = program;
 
     gl.disable(gl.CULL_FACE);
@@ -165,10 +165,16 @@ export class RenderContext {
     this.smesh.draw(gl);
   }
 
-  renderStage(fbo, drawfunc) {
+  renderStage(fbo, size, drawfunc) {
     let gl = this.gl;
 
-    fbo.update(this.gl, ~~this.size[0], ~~this.size[1]);
+    fbo.update(this.gl, ~~size[0], ~~size[1]);
+
+    if (size[0] !== this.size[0] && size[1] !== this.size[1]) {
+      gl.bindTexture(gl.TEXTURE_2D, fbo.texColor.texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
     fbo.bind(gl);
 
     //gl.enable(gl.DEPTH_TEST);
@@ -192,6 +198,9 @@ export class RenderPass extends Node {
     super();
 
     this.uniforms = {};
+    this.sizeScale = 1.0;
+    this.hasCustomSize = false;
+    this.size = [0, 0];
   }
 
   getDebugName() {
@@ -361,7 +370,7 @@ void main(void) {
       return;
     }
 
-    program.uniforms.size = rctx.size;
+    program.uniforms.size = this.size;
     program.uniforms.uSample = rctx.engine.uSample;
     this.uniforms.uSample = rctx.engine.uSample;
     program.uniforms.projectionMatrix = rctx.drawmats.rendermat;
@@ -376,7 +385,7 @@ void main(void) {
 
     this.bindInputs(rctx, program);
 
-    rctx.drawQuad(program);
+    rctx.drawQuad(program, this.size);
   }
 
   exec(rctx) {
@@ -386,7 +395,11 @@ void main(void) {
       this.renderIntern(rctx);
     };
 
-    rctx.renderStage(this.outputs.fbo.data, render);
+    if (!this.hasCustomSize) {
+      this.size = [~~(rctx.size[0] * this.sizeScale), ~~(rctx.size[1] * this.sizeScale)];
+    }
+
+    rctx.renderStage(this.outputs.fbo.data, this.size, render);
     gl.finish();
 
     for (let k in this.outputs) {

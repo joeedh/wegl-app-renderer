@@ -299,10 +299,11 @@ let sdigest = new util.HashDigest();
 export class RenderSettings {
   constructor() {
     this.sharpen = true;
-    this.filterWidth = 2.0;
+    this.filterWidth = 1.5;
     this.sharpenWidth = 1;
     this.sharpenFac = 0.4;
-    this.minSamples = 2;
+    this.minSamples = 1;
+    this.ao = true;
   }
 
   calcUpdateHash() {
@@ -310,6 +311,7 @@ export class RenderSettings {
     sdigest.add(!!this.sharpen);
     sdigest.add(this.filterWidth);
     sdigest.add(this.sharpenWidth);
+    sdigest.add(this.ao);
 
     return sdigest.get();
   }
@@ -349,6 +351,8 @@ export class RealtimeEngine extends RenderEngine {
     this.weightSum = 0.0;
     this.maxSamples = 8;
 
+    this.shaderUpdateGen = 0;
+
     this._last_update_hash = undefined;
 
     this.rebuildGraph();
@@ -362,20 +366,33 @@ export class RealtimeEngine extends RenderEngine {
     let out = this.outPass = new OutputPass();
     let accumOut = this.accumOutPass = new AccumPass();
     let passThru = this.passThru = new PassThruPass();
-    let ao = this.aoPass = new AOPass();
+    let ao = new AOPass();
 
     console.log("rebuild render graph");
 
     //let test = new TestPass();
 
-    this.rendergraph.add(nor);
     this.rendergraph.add(out);
     this.rendergraph.add(base);
-    this.rendergraph.add(ao);
 
-    nor.outputs.fbo.connect(ao.inputs.fbo);
+    let needNormalPass = false;
 
-    if (1) {
+    console.log(this.renderSettings.ao);
+
+    if (this.renderSettings.ao) {
+      needNormalPass = true;
+
+      //force material recompiling to get WITH_AO define
+      if (!this.aoPass) {
+        this.shaderUpdateGen++;
+      }
+
+      this.rendergraph.add(ao);
+      this.rendergraph.add(nor);
+
+      nor.outputs.fbo.connect(ao.inputs.fbo);
+
+
       let blurx = new DenoiseBlur();
       let blury = new DenoiseBlur();
 
@@ -386,8 +403,8 @@ export class RealtimeEngine extends RenderEngine {
 
       blury.inputs.axis.setValue(1);
 
-      blury.inputs.samples.setValue(6);
-      blurx.inputs.samples.setValue(6);
+      blury.inputs.samples.setValue(2);
+      blurx.inputs.samples.setValue(2);
 
       ao.outputs.fbo.connect(blurx.inputs.fbo);
       //blurx.outputs.fbo.connect(blury.inputs.fbo);
@@ -398,11 +415,19 @@ export class RealtimeEngine extends RenderEngine {
       //ao.outputs.fbo.connect(base.inputs.ao);
       //ao.outputs.fbo.connect(base.inputs.ao);
     } else {
-      this.aoPass = ao;
-      ao.outputs.fbo.connect(base.inputs.ao);
+      if (this.aoPass) {
+        //force all materials to recompile
+        this.shaderUpdateGen++;
+      }
+      this.aoPass = undefined;
+      //this.aoPass = ao;
+      //ao.outputs.fbo.connect(base.inputs.ao);
     }
 
-    nor.outputs.fbo.connect(base.inputs.normal);
+    if (needNormalPass) {
+      nor.outputs.fbo.connect(base.inputs.normal);
+    }
+
 
     if (1) {
       this.rendergraph.add(accumOut);
@@ -537,6 +562,14 @@ export class RealtimeEngine extends RenderEngine {
     if (this.renderSettings.sharpen) {
       this.updateSharpen();
     }
+
+    /*
+    let t = util.time_ms();
+    while (util.time_ms() - t < 12) {
+      this._render(...arguments);
+    }
+    return;
+    */
 
     if (this.uSample >= this.renderSettings.minSamples) {
       this._render(...arguments);
@@ -830,8 +863,8 @@ export class RealtimeEngine extends RenderEngine {
       uSample          : this.uSample+1
     };
 
-    let ao = this.aoPass.getOutput();
-    if (ao.texColor) {
+    if (this.aoPass) {
+      let ao = this.aoPass.getOutput();
       uniforms.passAO = ao.texColor;
     } else {
       uniforms.passAO = this.getNullTex(gl);
@@ -845,7 +878,15 @@ export class RealtimeEngine extends RenderEngine {
     let updateMat = (mat) => {
       let hash = mat.calcUpdateHash();
 
+
+      if (mat._shadergen !== this.shaderUpdateGen) {
+        mat._shadergen = this.shaderUpdateGen;
+        console.log("material recompile");
+        mat._regen = 1;
+      }
+
       if (hash !== mat._last_update_hash) {
+
         //note that the update hash changes on shader uniform changes as well as
         //code changes, so we don't call mat.flagRegen()
 
@@ -864,7 +905,12 @@ export class RealtimeEngine extends RenderEngine {
       if (this.cache.has(mat.lib_id)) {
         program = this.cache.get(mat.lib_id);
       } else {
-        let shaderdef = mat.generate(scene, this.lights);
+        let defines = "";
+        if (this.renderSettings.ao) {
+          defines += "#define WITH_AO\n";
+        }
+
+        let shaderdef = mat.generate(scene, this.lights, defines);
 
         window._debug_shaderdef = shaderdef;
 

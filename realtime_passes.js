@@ -193,7 +193,7 @@ export class BasePass extends RenderPass {
     let shift = jit[rctx.uSample % jit.length];
     let scale = 2.0 / Math.sqrt(jit.length);
 
-    let r = 2.0;
+    let r = rctx.engine.renderSettings.filterWidth;
 
     let shiftx = (shift[0]+(Math.random()-0.5)*scale)*r;
     let shifty = (shift[1]+(Math.random()-0.5)*scale)*r;
@@ -328,6 +328,7 @@ gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
 export class AOPass extends RenderPass {
   constructor() {
     super();
+    this.sizeScale = 0.25;
   }
 
   static nodedef() {return {
@@ -345,7 +346,7 @@ uniform float steps;
 
 //const float dist=2.0, factor=2.5, steps=1024.0;
 
-#define samples 2
+#define samples 20
 #define seed1 0.23432
 #define seed2=1.2342
 
@@ -358,34 +359,20 @@ vec4 unproject(vec4 p) {
   return p2;
 }
 
-#if 0
-float sample_blue(vec2 uv) {
-  float x = fract(uv[0] * size[0] / bluemask_size[0]); 
-  float y = fract(uv[1] * size[1] / bluemask_size[1]); 
-  
-  return texture2D(bluemask, vec2(x, y))[0];
-}
-#endif
-
 float rand(float x, float y, float seed) {
   //partially de-correlate with blue noise mask
   float sf = sampleBlue(vec2(x, y))[0];
 
-  
   //squish blue noise range
   sf = floor(sf*14.0)/14.0;
   
   //add uSample
   sf += fract(uSample*sqrt(3.0))*0.1;
-  
-  //sf = 0.0;
-  //sf = fract(x*sqrt(3.0) + y*sqrt(5.0) + uSample*0.25*sqrt(3.0));
-  //sf = fract(1.0 / (sf*0.001 + 0.000001));
-  
+
+  //calc final random value
   seed += sf*10.0; 
   
   float f = fract(seed*sqrt(3.0));
-
   f = fract(1.0 / (f*0.00001 + 0.00001));
   
   return f;
@@ -454,13 +441,15 @@ float rand(float x, float y, float seed) {
   f = clamp(f, 0.0, 1.0);
   f = isnan(f) ? 1.0 : f;
    
+  float depth = sampleDepth(fbo_depth, v_Uv);
+   
   vec4 color = texture2D(fbo_rgba, v_Uv);
-  gl_FragColor = vec4(f, f, f, 1.0);
+  gl_FragColor = vec4(f, f, depth, 1.0);
   
   //gl_FragColor = texture2D(fbo_rgba, v_Uv);
   //gl_FragColor = vec4(texture2D(fbo_rgba, v_Uv).rgb, 1.0);
   
-  gl_FragDepth = sampleDepth(fbo_depth, v_Uv);
+  gl_FragDepth = depth;
   
 `
   }}
@@ -468,7 +457,7 @@ float rand(float x, float y, float seed) {
   renderIntern(rctx) {
     let gl = rctx.gl;
 
-    setBlueUniforms(this.uniforms, rctx.size, getBlueMask(gl), rctx.uSample);
+    setBlueUniforms(this.uniforms, this.size, getBlueMask(gl), rctx.uSample);
 
     this.uniforms.factor = rctx.scene.envlight.ao_fac;
     this.uniforms.dist = rctx.scene.envlight.ao_dist;
@@ -565,9 +554,9 @@ export class DenoiseBlur extends RenderPass {
 
   getDebugName() {
     if (this.inputs.axis.getValue() === 1) {
-      return "blur_y";
+      return "denoise_y";
     } else {
-      return "blur_x";
+      return "denoise_x";
     }
   }
 
@@ -580,6 +569,7 @@ export class DenoiseBlur extends RenderPass {
       axis    : new FloatSocket(undefined, undefined, 0),
       samples : new FloatSocket(undefined, undefined, 3),
       depthScale : new FloatSocket(undefined, undefined, 10.0),
+      depthPreScale : new FloatSocket(undefined, undefined, 1.0),
       depthOffset : new FloatSocket(undefined, undefined, -0.9)
 
     }),
@@ -589,7 +579,7 @@ export class DenoiseBlur extends RenderPass {
     }),
 
     shaderPre : ``,
-       
+
     shader : `
     
     vec4 accum;
@@ -603,7 +593,9 @@ export class DenoiseBlur extends RenderPass {
     
     //XXX scale depth range properly
     
-    d = (d + DEPTH_OFFSET)*DEPTH_SCALE;
+    //#define CALCD(d) max(((d)*DEPTH_PRESCALE + DEPTH_OFFSET)*DEPTH_SCALE, 0.0001)
+    #define CALCD(d) (((d)*DEPTH_PRESCALE + DEPTH_OFFSET)*DEPTH_SCALE)
+    d = CALCD(d);
     
     for (int i=-BLUR_SAMPLES; i<BLUR_SAMPLES; i++) {
       float w = 1.0 - abs(float(i) / float(BLUR_SAMPLES));
@@ -616,10 +608,9 @@ export class DenoiseBlur extends RenderPass {
       p2[BLUR_AXIS] += float(i);//persw;
       
       vec4 color = texture2D(fbo_rgba, p2 / size);
-      float d2 = color[2];
-      d2 = (d2 + DEPTH_OFFSET)*DEPTH_SCALE;
+      float d2 = CALCD(color[2]);
       
-      color[0] *= d2 < 0.00001 ? 0.0001 : d2;
+      color[0] *= d2;
       
       accum += color*w;
       tot += w;
@@ -639,6 +630,19 @@ export class DenoiseBlur extends RenderPass {
     `,
   }}
 
+  exec(rctx) {
+    let sock = this.inputs.fbo;
+    if (sock.edges.length > 0) {
+      sock = sock.edges[0];
+
+      this.hasCustomSize = true;
+      this.size[0] = sock.data.size[0];
+      this.size[1] = sock.data.size[1];
+    }
+
+    return super.exec(rctx);
+  }
+
   renderIntern(rctx) {
     let shaderPre = this.constructor.nodedef().shaderPre;
 
@@ -656,6 +660,12 @@ export class DenoiseBlur extends RenderPass {
       off += ".0";
     }
     shaderPre += "#define DEPTH_OFFSET " + off + "\n";
+
+    let prescale = this.inputs.depthPreScale.getValue().toString();
+    if (prescale.search(/\./) < 0) {
+      prescale += ".0";
+    }
+    shaderPre += "#define DEPTH_PRESCALE " + prescale + "\n";
 
     if (this.inputs.axis.getValue() === 0.0) {
       shaderPre = "#define BLUR_AXIS 0\n" + shaderPre;
