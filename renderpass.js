@@ -2,7 +2,7 @@ import {DataBlock, DataRef} from '../core/lib_api.js';
 import {getShader} from '../core/webgl.js';
 import {loadShader, Shaders} from '../shaders/shaders.js';
 import {LightGen} from '../shadernodes/shader_lib.js';
-import {LayerTypes, SimpleMesh} from '../core/simplemesh.js';
+import {LayerTypes, SimpleMesh} from '../core/simplemesh.ts';
 
 import {Vector2, Vector3, Vector4, Quat, Matrix4} from '../util/vectormath.js';
 import * as util from '../util/util.js';
