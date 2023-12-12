@@ -4,7 +4,9 @@ import {LightGen} from '../shadernodes/shader_lib.js';
 import {Light} from '../light/light.js';
 import {FBO} from '../core/fbo.js';
 import {FBOSocket, RenderContext, RenderGraph, RenderPass} from "./renderpass.js";
-import {BasePass, SharpenPass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, DenoiseBlur, PassThruPass} from "./realtime_passes.js";
+import {
+  BasePass, SharpenPass, NormalPass, AccumPass, OutputPass, AOPass, BlurPass, DenoiseBlur, PassThruPass
+} from "./realtime_passes.js";
 import {Texture, CubeTexture} from '../core/webgl.js';
 import {getFBODebug} from "../editors/debug/gldebug.js";
 
@@ -21,22 +23,22 @@ import {BasicFileOp} from "../core/appstate.js";
  corrusponds to opengl ordering
  @example
  export const CubeMap = {
-  POSX : 0,
-  NEGX : 1,
-  POSY : 2,
-  NEGY : 3,
-  POSZ : 4,
-  NEGZ : 5
-};
+ POSX : 0,
+ NEGX : 1,
+ POSY : 2,
+ NEGY : 3,
+ POSZ : 4,
+ NEGZ : 5
+ };
  */
 
 export const CubeMapOrder = {
-  POSX : 0,
-  NEGX : 1,
-  POSY : 2,
-  NEGY : 3,
-  POSZ : 4,
-  NEGZ : 5
+  POSX: 0,
+  NEGX: 1,
+  POSY: 2,
+  NEGY: 3,
+  POSZ: 4,
+  NEGZ: 5
 };
 
 export class CubeFace {
@@ -82,7 +84,7 @@ export class CubeFace {
     gl.clearDepth(10000.0);
     gl.clearColor(0, 0, 0, 0);
 
-    gl.clear(gl.DEPTH_BUFFER_BIT|gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 
     gl.disable(gl.BLEND);
     gl.disable(gl.DITHER);
@@ -99,13 +101,13 @@ export class CubeFace {
 
     let uniforms = {
       projectionMatrix : this.projectionMatrix,
-      iprojectionMatrix : this.iprojectionMatrix,
-      normalMatrix : new Matrix4(),
-      objectMatrix : new Matrix4(),
-      cameraMatrix : this.cameraMatrix,
-      near : this.near,
-      far : this.far,
-      object_id : undefined
+      iprojectionMatrix: this.iprojectionMatrix,
+      normalMatrix     : new Matrix4(),
+      objectMatrix     : new Matrix4(),
+      cameraMatrix     : this.cameraMatrix,
+      near             : this.near,
+      far              : this.far,
+      object_id        : undefined
     };
 
     for (let ob of scene.objects.renderable) {
@@ -156,11 +158,11 @@ export class CubeMap extends Array {
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex);
     //gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 0, gl.DEPTH_COMPONENT, this.size[0], this.size[1]);
 
-    for (let i=0; i<6; i++) {
+    for (let i = 0; i < 6; i++) {
       let cf = this[i];
     }
 
-    this.gltex = new CubeTexture(undefined, tex);
+    this.gltex = new CubeTexture(tex);
   }
 }
 
@@ -275,9 +277,9 @@ export class RenderLight {
 
     let r = this.light.data.inputs.radius.getValue();
 
-    let x = (util.random()-0.5)*2.0*r;
-    let y = (util.random()-0.5)*2.0*r;
-    let z = (util.random()-0.5)*2.0*r;
+    let x = (util.random() - 0.5)*2.0*r;
+    let y = (util.random() - 0.5)*2.0*r;
+    let z = (util.random() - 0.5)*2.0*r;
 
     this.co[0] += x;
     this.co[1] += y;
@@ -315,6 +317,7 @@ export class RenderSettings {
     return sdigest.get();
   }
 }
+
 RenderSettings.STRUCT = `
 renderengine_realtime.RenderSettings {
   sharpen      : bool;
@@ -649,7 +652,7 @@ export class RealtimeEngine extends RenderEngine {
     }
   }
 
-  renderShadowCube(rlight, co, near=0.01, far=10000.0) {
+  renderShadowCube(rlight, co, near = 0.01, far = 10000.0) {
     let gl = this.gl;
 
     let makeProjMat = (axis, sign) => {
@@ -665,7 +668,7 @@ export class RealtimeEngine extends RenderEngine {
           mat.euler_rotate(sign*Math.PI*0.5, 0.0, 0.0);
           break;
         case 2:
-          mat.euler_rotate(0.0, 0.0, (-sign*0.5+0.5)*Math.PI);
+          mat.euler_rotate(0.0, 0.0, (-sign*0.5 + 0.5)*Math.PI);
           break;
       }
 
@@ -674,7 +677,7 @@ export class RealtimeEngine extends RenderEngine {
         let up = new Vector3();
 
         vaxis[axis] = 1.0;
-        up[(axis + 1) % 3] = 1.0;
+        up[(axis + 1)%3] = 1.0;
 
         let target = new Vector3(co).add(vaxis);
 
@@ -742,12 +745,12 @@ export class RealtimeEngine extends RenderEngine {
     //  glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_R32F, WindowWidth, WindowHeight, 0, GL_RED, GL_FLOAT, NULL);
     //}
 
-    for (let i=0; i<3; i++) {
+    for (let i = 0; i < 3; i++) {
       let pm1 = makeProjMat(i, 1);
       let pm2 = makeProjMat(i, -1);
 
       cube[i*2] = new CubeFace(gl, pm1[0], pm1[1], size, i*2, ctex, dtex, near, far);
-      cube[i*2+1] = new CubeFace(gl, pm2[0], pm2[1], size, i*2+1, ctex, dtex, near, far);
+      cube[i*2 + 1] = new CubeFace(gl, pm2[0], pm2[1], size, i*2 + 1, ctex, dtex, near, far);
     }
 
     window._cube = cube;
@@ -764,14 +767,14 @@ export class RealtimeEngine extends RenderEngine {
     let pmat = this.projmat;
 
     pmat.load(camera.rendermat);
-    let dx = 1.0 / viewbox_size[0];
-    let dy = 1.0 / viewbox_size[1];
+    let dx = 1.0/viewbox_size[0];
+    let dy = 1.0/viewbox_size[1];
 
     let tmat = new Matrix4();
 
     util.seed(this.uSample);
 
-    tmat.translate(dx*(util.random()-0.5)*2.0, dx*(util.random()-0.5)*2.0, 0.0);
+    tmat.translate(dx*(util.random() - 0.5)*2.0, dx*(util.random() - 0.5)*2.0, 0.0);
     pmat.preMultiply(tmat);
 
     return pmat;
@@ -782,9 +785,9 @@ export class RealtimeEngine extends RenderEngine {
     let view3d = _appstate.ctx.view3d;
 
     let uniforms = {
-      projectionMatrix : this.getProjMat(camera, viewbox_size),
-      normalMatrix     : camera.normalmat,
-      uSample          : this.uSample+1
+      projectionMatrix: this.getProjMat(camera, viewbox_size),
+      normalMatrix    : camera.normalmat,
+      uSample         : this.uSample + 1
     };
 
     LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample);
@@ -826,7 +829,7 @@ export class RealtimeEngine extends RenderEngine {
     //window.redraw_viewport();
   }
 
-  render_intern(camera, gl, viewbox_pos, viewbox_size, scene, shiftx=0, shifty=0) {
+  render_intern(camera, gl, viewbox_pos, viewbox_size, scene, shiftx = 0, shifty = 0) {
     let view3d = _appstate.ctx.view3d;
 
     let hash = this._digest;
@@ -858,12 +861,12 @@ export class RealtimeEngine extends RenderEngine {
     matrix.preMultiply(mat2);
 
     let uniforms = {
-      projectionMatrix : matrix,
-      normalMatrix     : camera.normalmat,
-      viewportSize     : viewbox_size,
-      ambientColor     : scene.envlight.color,
-      ambientPower     : scene.envlight.power,
-      uSample          : this.uSample+1
+      projectionMatrix: matrix,
+      normalMatrix    : camera.normalmat,
+      viewportSize    : viewbox_size,
+      ambientColor    : scene.envlight.color,
+      ambientPower    : scene.envlight.power,
+      uSample         : this.uSample + 1
     };
 
     if (this.aoPass) {
@@ -875,7 +878,7 @@ export class RealtimeEngine extends RenderEngine {
 
     //this.getPass(this.aoPass, uniforms);
 
-    LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample+1);
+    LightGen.setUniforms(gl, uniforms, scene, this.lights, true, this.uSample + 1);
     window._debug_uniforms = uniforms;
 
     let updateMat = (mat) => {
